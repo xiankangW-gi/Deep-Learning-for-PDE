@@ -4,7 +4,7 @@ import time
 import matplotlib.pyplot as plt
 from abc import ABC, abstractmethod
 
-# Set random seeds for reproducibility
+
 np.random.seed(42)
 tf.random.set_seed(42)
 
@@ -104,70 +104,53 @@ class FBSNN(ABC):
 
 
     @tf.function
-    def loss_function(self, t, W, Xi): # M x (N+1) x 1, M x (N+1) x D, 1 x D
-        
-        loss = 0.0
-        X_list = []
-        Y_list = []
-
-        t0 = t[:,0,:]
-        W0 = W[:,0,:]
-        X0 = tf.tile(Xi,[self.M,1]) # M x D
-        Y0, Z0 = self.net_u(t0,X0) # M x 1, M x D
-
-        X_list.append(X0)
-        Y_list.append(Y0)
-
+    def loss_function(self, t, W, Xi):  # M x (N+1) x 1, M x (N+1) x D, 1 x D
         dt = self.T / self.N
-
-        for n in range(0,self.N):
-            t1 = t[:,n+1,:]
-            W1 = W[:,n+1,:]
-
+        loss = 0.0
+        
+        
+        t_curr, W_curr = t[:, 0, :], W[:, 0, :]
+        X_curr = tf.tile(Xi, [self.M, 1])  # M x D
+        Y_curr, Z_curr = self.net_u(t_curr, X_curr)  # M x 1, M x D
+        
+        X_list = [X_curr]
+        Y_list = [Y_curr]
+        
+        
+        for n in range(self.N):
+            t_next, W_next = t[:, n+1, :], W[:, n+1, :]
+            dW = W_next - W_curr  # M x D
             
-            mu_term = self.mu_tf(t0,X0,Y0,Z0) * dt
-
             
-            sigma_matrix = self.sigma_tf(t0,X0,Y0) # M x D x D
-            dW = W1 - W0 # M x D
-
+            mu_term = self.mu_tf(t_curr, X_curr, Y_curr, Z_curr) * dt
+            sigma_matrix = self.sigma_tf(t_curr, X_curr, Y_curr)  # M x D x D
+            sigma_term = tf.linalg.matvec(sigma_matrix, dW)  # M x D
+            X_next = X_curr + mu_term + sigma_term
             
-            sigma_term = tf.linalg.matvec(sigma_matrix, dW)  # (M, D)
-
-            X1 = X0 + mu_term + sigma_term
-
-            # Compute Y1_tilde 
-            phi_term = self.phi_tf(t0,X0,Y0,Z0) * dt
-            Z_sigma_term = tf.reduce_sum(Z0 * sigma_term, axis=1, keepdims=True)
-            Y1_tilde = Y0 + phi_term + Z_sigma_term
-
-            Y1, Z1 = self.net_u(t1,X1)
-
-            # Add regularization to prevent overfitting
-            step_loss = tf.reduce_mean(tf.square(Y1 - Y1_tilde))
-            loss += step_loss
-
-            t0 = t1
-            W0 = W1
-            X0 = X1
-            Y0 = Y1
-            Z0 = Z1
-
-            X_list.append(X0)
-            Y_list.append(Y0)
-
-        # Terminal condition losses with improved weighting
-        terminal_loss_Y = tf.reduce_mean(tf.square(Y1 - self.g_tf(X1)))
-        terminal_loss_Z = tf.reduce_mean(tf.square(Z1 - self.Dg_tf(X1)))
-
-        # Weight the terminal losses appropriately
-        loss +=  terminal_loss_Y
-        loss +=  terminal_loss_Z
-
-        X = tf.stack(X_list,axis=1)
-        Y = tf.stack(Y_list,axis=1)
-
-        return loss, X, Y, Y[0,0,0]
+          
+            phi_term = self.phi_tf(t_curr, X_curr, Y_curr, Z_curr) * dt
+            Z_sigma_term = tf.reduce_sum(Z_curr * sigma_term, axis=1, keepdims=True)
+            Y_tilde = Y_curr + phi_term + Z_sigma_term
+            
+            Y_next, Z_next = self.net_u(t_next, X_next)
+            
+           
+            loss += tf.reduce_mean(tf.square(Y_next - Y_tilde))
+            
+           
+            t_curr, W_curr, X_curr, Y_curr, Z_curr = t_next, W_next, X_next, Y_next, Z_next
+            X_list.append(X_curr)
+            Y_list.append(Y_curr)
+        
+        
+        loss += tf.reduce_mean(tf.square(Y_curr - self.g_tf(X_curr)))
+        loss += tf.reduce_mean(tf.square(Z_curr - self.Dg_tf(X_curr)))
+        
+        
+        X = tf.stack(X_list, axis=1)
+        Y = tf.stack(Y_list, axis=1)
+        
+        return loss, X, Y, Y[0, 0, 0]
 
     def fetch_minibatch(self):
 
@@ -192,7 +175,6 @@ class FBSNN(ABC):
 
     @tf.function
     def train_step(self, t_batch, W_batch, Xi):
-        """Optimized training step with better gradient handling"""
         with tf.GradientTape() as tape:
             loss, X_pred, Y_pred, Y0_pred = self.loss_function(t_batch, W_batch, Xi)
 
@@ -255,7 +237,6 @@ class FBSNN(ABC):
                 print(f"Reduced learning rate to {new_lr:.3e}")
 
     def predict(self, Xi_star, t_star, W_star):
-        """Prediction function"""
         Xi_star = tf.constant(Xi_star, dtype=tf.float32)
         t_star = tf.constant(t_star, dtype=tf.float32)
         W_star = tf.constant(W_star, dtype=tf.float32)
@@ -288,7 +269,7 @@ class FBSNN(ABC):
         return tf.eye(D, batch_shape=[M], dtype=tf.float32)
 
 # ============================================================================
-# HAMILTON-JACOBI-BELLMAN EQUATION SOLVER - IMPROVED
+# HAMILTON-JACOBI-BELLMAN EQUATION 
 # ============================================================================
 
 class HamiltonJacobiBellman(FBSNN):
@@ -308,7 +289,7 @@ class HamiltonJacobiBellman(FBSNN):
         return tf.sqrt(2.0) * super().sigma_tf(t, X, Y) # M x D x D
 
 # ============================================================================
-# MAIN EXECUTION - IMPROVED WITH ENHANCED PLOTTING
+# MAIN EXECUTION 
 # ============================================================================
 
 if __name__ == "__main__":
@@ -316,17 +297,17 @@ if __name__ == "__main__":
     print("Starting improved 100-dimensional Hamilton-Jacobi-Bellman equation solver...")
     print("Using TensorFlow", tf.__version__)
 
-    # Parameters - optimized for better convergence
-    M = 100 # number of trajectories (batch size) - use power of 2
-    N = 50 # number of time snapshots - reduced for faster training
+   
+    M = 100 # number of trajectories (batch size) 
+    N = 50 # number of time snapshots 
     D = 100 # number of dimensions
 
     # Improved network architecture
-    layers = [D+1] + 4*[256] + [1]  # Slightly smaller but more efficient
+    layers = [D+1] + 4*[256] + [1]  
     Xi = np.zeros([1,D])
     T = 1.0
 
-    # Training with improved strategy
+   
     print("\nInitializing model...")
     model = HamiltonJacobiBellman(Xi, T, M, N, D, layers)
 
@@ -334,7 +315,7 @@ if __name__ == "__main__":
     print(f"Model architecture: {layers}")
     print(f"Total parameters: {total_params}")
 
-    # Multi-stage training with better learning rates
+    
     print("\nPhase 1: Initial training (LR: 1e-3)")
     model.train(N_Iter=5000, learning_rate=1e-3)
 
@@ -346,33 +327,33 @@ if __name__ == "__main__":
 
     print("\nTraining completed! Generating test results...")
 
-    # Testing with exact solution
+   
     t_test, W_test = model.fetch_minibatch()
     X_pred, Y_pred = model.predict(Xi, t_test, W_test)
 
-    def u_exact(t, X): # Exact solution using Monte Carlo
-        MC = 10000  # Monte Carlo samples
+    def u_exact(t, X): 
+        MC = 10000  
         NC = t.shape[0]
 
-        # Generate random samples: MC x NC x D
+        
         W = np.random.normal(size=(MC, NC, D))
 
-        # Expand dimensions properly for broadcasting
+        
         X_expanded = np.expand_dims(X, 0)  # 1 x NC x D
         t_expanded = np.expand_dims(t.squeeze(), 0)  # 1 x NC
 
-        # Time-dependent term: sqrt(2 * |T - t|)
+        
         sqrt_term = np.sqrt(2.0 * np.abs(T - t_expanded))  # 1 x NC
         sqrt_term = np.expand_dims(sqrt_term, -1)  # 1 x NC x 1
 
-        # Compute terminal positions: MC x NC x D
+        
         X_terminal = X_expanded + sqrt_term * W
 
-        # Terminal condition: log(0.5 + 0.5*|X|^2)
+        
         X_squared = np.sum(X_terminal**2, axis=2, keepdims=True)  # MC x NC x 1
         g_values = np.log(0.5 + 0.5 * X_squared)
 
-        # Monte Carlo expectation: -log(E[exp(-g)])
+        
         u_values = -np.log(np.mean(np.exp(-g_values), axis=0))  # NC x 1
 
         return u_values.squeeze()  # NC
@@ -380,10 +361,10 @@ if __name__ == "__main__":
     print("Computing exact solution for comparison...")
     Y_test = u_exact(t_test[0,:,:], X_pred[0,:,:])
 
-    # Compute terminal condition values
+   
     Y_test_terminal = np.log(0.5 + 0.5*np.sum(X_pred[:,-1,:]**2, axis=1, keepdims=True))
 
-    # Print results
+    
     print(f"\nResults after training:")
     print(f"Initial value Y0 (learned): {Y_pred[0,0,0]:.6f}")
     print(f"Initial value Y0 (exact): {Y_test[0]:.6f}")
@@ -392,22 +373,19 @@ if __name__ == "__main__":
     print(f"Absolute error: {initial_error:.6f}")
     print(f"Relative error: {relative_error:.6f} ({relative_error*100:.3f}%)")
 
-    # Enhanced plotting with initial and terminal conditions marked
-    print("Generating enhanced plots...")
 
     plt.figure(figsize=(12, 8))
 
-    # Plot learned solution for first trajectory
+    
     plt.plot(t_test[0:1,:,0].T, Y_pred[0:1,:,0].T, 'b-', linewidth=2, label='Learned $u(t,X_t)$')
 
-    # Plot exact solution
     plt.plot(t_test[0,:,0].T, Y_test, 'r--', linewidth=2, label='Exact $u(t,X_t)$')
 
-    # Mark terminal condition Y_T = u(T,X_T)
+    
     plt.plot(t_test[0:1,-1,0], Y_test_terminal[0:1,0], 'ks', markersize=8,
              label='$Y_T = u(T,X_T)$')
 
-    # Mark initial condition Y_0 = u(0,X_0)
+    
     plt.plot([0], Y_test[0], 'ko', markersize=8, label='$Y_0 = u(0,X_0)')
 
     plt.xlabel('$t$', fontsize=14)
@@ -418,7 +396,7 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.show()
 
-    # Error analysis plot
+   
     errors = np.abs(Y_test - Y_pred[0,:,0]) / np.abs(Y_test)
 
     plt.figure(figsize=(12, 6))
